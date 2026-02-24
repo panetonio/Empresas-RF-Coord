@@ -1,0 +1,170 @@
+# =============================================================================
+# .github/workflows/pipeline.yml
+#
+# Workflow manual (workflow_dispatch) para executar o pipeline RFB.
+#
+# Pré-requisitos (GitHub Secrets):
+#   RCLONE_CONFIG — conteúdo completo do arquivo rclone.conf com a
+#                   configuração do Google Drive (remote chamado "gdrive").
+#
+# Como gerar o RCLONE_CONFIG:
+#   1. Instale rclone localmente
+#   2. Execute: rclone config  → crie um remote "gdrive" do tipo "drive"
+#   3. Copie o conteúdo de ~/.config/rclone/rclone.conf para o Secret
+# =============================================================================
+
+name: RFB Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      month:
+        description: "Mês de referência (ex: 2025-11) ou 'latest'"
+        required: false
+        default: "latest"
+
+      outputs:
+        description: "Outputs desejados (separados por espaço): municipio cnpj_estab cnpj_empresa"
+        required: true
+        default: "municipio"
+
+      municipios:
+        description: "Códigos IBGE dos municípios (separados por espaço, ex: 5002704 5002472)"
+        required: false
+        default: ""
+
+      uf:
+        description: "UF do arquivo de coordenadas (ex: MS)"
+        required: false
+        default: ""
+
+      cnpjs_gdrive_path:
+        description: "Caminho do XLSX de CNPJs no Google Drive (ex: MyDrive/cnpjs.xlsx)"
+        required: false
+        default: ""
+
+      coords_gdrive_dir:
+        description: "Diretório dos arquivos coord_{UF}.parquet no Google Drive (ex: MyDrive/coords)"
+        required: false
+        default: "MyDrive/CNPJs/coords"
+
+      output_gdrive_dir:
+        description: "Diretório de destino dos outputs no Google Drive (ex: MyDrive/CNPJs/outputs)"
+        required: false
+        default: "MyDrive/CNPJs/outputs"
+
+      max_parallel:
+        description: "Máximo de downloads simultâneos (padrão: 2)"
+        required: false
+        default: "2"
+
+      no_nominatim:
+        description: "Desabilitar Nominatim? (true/false)"
+        required: false
+        default: "false"
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    # GitHub Actions fornece ~14 GB de disco livre — suficiente para
+    # os arquivos temporários (ZIP+CSV+Parquet são deletados em sequência).
+
+    steps:
+      # ------------------------------------------------------------------
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # ------------------------------------------------------------------
+      - name: Instalar dependências Python
+        run: pip install -r requirements.txt
+
+      # ------------------------------------------------------------------
+      - name: Instalar rclone
+        run: curl https://rclone.org/install.sh | sudo bash
+
+      # ------------------------------------------------------------------
+      - name: Configurar rclone
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "${{ secrets.RCLONE_CONFIG }}" > ~/.config/rclone/rclone.conf
+
+      # ------------------------------------------------------------------
+      - name: Criar diretórios locais de trabalho
+        run: |
+          mkdir -p /tmp/rfb_data/coords
+
+      # ------------------------------------------------------------------
+      - name: Baixar arquivo de coordenadas do Google Drive
+        if: ${{ inputs.uf != '' }}
+        run: |
+          rclone copy \
+            "gdrive:${{ inputs.coords_gdrive_dir }}/coord_${{ inputs.uf }}.parquet" \
+            /tmp/rfb_data/coords/
+
+      # ------------------------------------------------------------------
+      - name: Baixar XLSX de CNPJs do Google Drive
+        if: ${{ inputs.cnpjs_gdrive_path != '' }}
+        run: |
+          rclone copy \
+            "gdrive:${{ inputs.cnpjs_gdrive_path }}" \
+            /tmp/rfb_data/
+          # Renomeia para nome previsível
+          FILENAME=$(basename "${{ inputs.cnpjs_gdrive_path }}")
+          mv "/tmp/rfb_data/${FILENAME}" /tmp/rfb_data/cnpjs.xlsx
+
+      # ------------------------------------------------------------------
+      - name: Executar pipeline
+        run: |
+          # Monta argumentos opcionais dinamicamente
+          MUNICIPIOS_ARG=""
+          if [ -n "${{ inputs.municipios }}" ]; then
+            MUNICIPIOS_ARG="--municipios ${{ inputs.municipios }}"
+          fi
+
+          UF_ARG=""
+          if [ -n "${{ inputs.uf }}" ]; then
+            UF_ARG="--uf ${{ inputs.uf }}"
+          fi
+
+          CNPJS_ARG=""
+          if [ -n "${{ inputs.cnpjs_gdrive_path }}" ]; then
+            CNPJS_ARG="--cnpjs-file /tmp/rfb_data/cnpjs.xlsx"
+          fi
+
+          NO_NOMINATIM_ARG=""
+          if [ "${{ inputs.no_nominatim }}" = "true" ]; then
+            NO_NOMINATIM_ARG="--no-nominatim"
+          fi
+
+          python pipeline.py \
+            --month    "${{ inputs.month }}" \
+            --outputs  ${{ inputs.outputs }} \
+            --base-dir /tmp/rfb_data \
+            --coords-dir /tmp/rfb_data/coords \
+            --max-parallel "${{ inputs.max_parallel }}" \
+            $MUNICIPIOS_ARG \
+            $UF_ARG \
+            $CNPJS_ARG \
+            $NO_NOMINATIM_ARG
+
+      # ------------------------------------------------------------------
+      - name: Sincronizar outputs para o Google Drive
+        if: always()
+        run: |
+          MONTH="${{ inputs.month }}"
+          if [ "$MONTH" = "latest" ]; then
+            # Descobre qual mês foi usado (o mais recente gerado)
+            MONTH=$(ls /tmp/rfb_data/ | grep -E '^\d{4}-\d{2}$' | sort | tail -1)
+          fi
+
+          rclone copy \
+            "/tmp/rfb_data/${MONTH}/outputs" \
+            "gdrive:${{ inputs.output_gdrive_dir }}/${MONTH}" \
+            --progress
