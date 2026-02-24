@@ -91,9 +91,11 @@ jobs:
 
       # ------------------------------------------------------------------
       - name: Configurar rclone
+        env:
+          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
         run: |
           mkdir -p ~/.config/rclone
-          echo "${{ secrets.RCLONE_CONFIG }}" > ~/.config/rclone/rclone.conf
+          printf '%s\n' "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
 
       # ------------------------------------------------------------------
       - name: DEBUG verificar config rclone
