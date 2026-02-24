@@ -96,6 +96,14 @@ jobs:
           echo "${{ secrets.RCLONE_CONFIG }}" > ~/.config/rclone/rclone.conf
 
       # ------------------------------------------------------------------
+      - name: DEBUG verificar config rclone
+        run: |
+          echo "=== Conteúdo do rclone.conf ==="
+          cat ~/.config/rclone/rclone.conf
+          echo "=== Remotes disponíveis ==="
+          rclone listremotes
+          
+      # ------------------------------------------------------------------
       - name: Criar diretórios locais de trabalho
         run: |
           mkdir -p /tmp/rfb_data/coords
