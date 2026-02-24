@@ -125,9 +125,10 @@ jobs:
           rclone copy \
             "gdrive:${{ inputs.cnpjs_gdrive_path }}" \
             /tmp/rfb_data/
-          # Renomeia para nome previsível
           FILENAME=$(basename "${{ inputs.cnpjs_gdrive_path }}")
-          mv "/tmp/rfb_data/${FILENAME}" /tmp/rfb_data/cnpjs.xlsx
+          if [ "$FILENAME" != "cnpjs.xlsx" ]; then
+            mv "/tmp/rfb_data/${FILENAME}" /tmp/rfb_data/cnpjs.xlsx
+          fi
 
       # ------------------------------------------------------------------
       - name: Executar pipeline
