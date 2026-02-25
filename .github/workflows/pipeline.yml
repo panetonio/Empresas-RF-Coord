@@ -176,7 +176,7 @@ jobs:
         run: |
           MONTH="${{ inputs.month }}"
           if [ "$MONTH" = "latest" ]; then
-            MONTH=$(ls /tmp/rfb_data/ | grep -E '^\d{4}-\d{2}$' | sort | tail -1)
+            MONTH=$(find /tmp/rfb_data/ -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]' | sort | tail -1 | xargs basename)
           fi
           
           echo "Mês definido: $MONTH"
@@ -199,7 +199,7 @@ jobs:
         run: |
           MONTH="${{ inputs.month }}"
           if [ "$MONTH" = "latest" ]; then
-            MONTH=$(ls /tmp/rfb_data/ | grep -E '^\d{4}-\d{2}$' | sort | tail -1)
+            MONTH=$(find /tmp/rfb_data/ -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]' | sort | tail -1 | xargs basename)
           fi
 
           # Validate that MONTH was actually found
