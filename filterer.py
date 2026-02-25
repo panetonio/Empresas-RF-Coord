@@ -207,12 +207,15 @@ def filter_cnpj_empresa(
     Retorna: output_path
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    basicos = {c[:8] for c in cnpjs}
+    # Garante zeros à esquerda em ambos os lados da comparação
+    basicos = {c[:8].zfill(8) for c in cnpjs}
     lf = _scan_parquet_dir(parquet_dir)
 
     df = (
         lf
-        .filter(pl.col("CNPJ_BASICO").is_in(basicos))
+        .with_columns(pl.col("CNPJ_BASICO").str.zfill(8).alias("_BASICO_NORM"))
+        .filter(pl.col("_BASICO_NORM").is_in(basicos))
+        .drop("_BASICO_NORM")
         .collect()
     )
 
