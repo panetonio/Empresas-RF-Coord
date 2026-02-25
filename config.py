@@ -2,8 +2,6 @@
 # config.py — Constantes do pipeline RFB
 # =============================================================================
 
-BASE_URL = "https://arquivos.receitafederal.gov.br/dados/cnpj/dados_abertos_cnpj/"
-
 COLS_ESTABELECIMENTO = [
     "CNPJ_BASICO", "CNPJ_ORDEM", "CNPJ_DV", "MATRIZ_FILIAL",
     "NOME_FANTASIA", "SITUACAO_CADASTRAL", "DATA_SITUACAO_CADASTRAL",
