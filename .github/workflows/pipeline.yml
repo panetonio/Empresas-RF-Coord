@@ -172,7 +172,7 @@ jobs:
 
       # ------------------------------------------------------------------
       - name: Verificar se outputs foram criados
-        if: always()
+        if: success()
         run: |
           MONTH="${{ inputs.month }}"
           if [ "$MONTH" = "latest" ]; then
@@ -195,7 +195,7 @@ jobs:
           
        # ------------------------------------------------------------------
       - name: Sincronizar outputs para o Google Drive
-        if: always()
+        if: success()
         run: |
           MONTH="${{ inputs.month }}"
           if [ "$MONTH" = "latest" ]; then
