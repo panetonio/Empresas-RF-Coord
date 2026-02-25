@@ -138,22 +138,23 @@ jobs:
           if [ -n "${{ inputs.municipios }}" ]; then
             MUNICIPIOS_ARG="--municipios ${{ inputs.municipios }}"
           fi
-
+      
           UF_ARG=""
           if [ -n "${{ inputs.uf }}" ]; then
             UF_ARG="--uf ${{ inputs.uf }}"
           fi
-
+      
           CNPJS_ARG=""
           if [ -n "${{ inputs.cnpjs_gdrive_path }}" ]; then
             CNPJS_ARG="--cnpjs-file /tmp/rfb_data/cnpjs.xlsx"
           fi
-
+      
           NO_NOMINATIM_ARG=""
           if [ "${{ inputs.no_nominatim }}" = "true" ]; then
             NO_NOMINATIM_ARG="--no-nominatim"
           fi
-
+      
+          set -e  # Exit on any error
           python pipeline.py \
             --month    "${{ inputs.month }}" \
             --outputs  ${{ inputs.outputs }} \
@@ -164,6 +165,10 @@ jobs:
             $UF_ARG \
             $CNPJS_ARG \
             $NO_NOMINATIM_ARG
+          
+          # Debug: show what was created
+          echo "===== Contents of /tmp/rfb_data after pipeline ====="
+          find /tmp/rfb_data/ -type f | head -100
 
       # ------------------------------------------------------------------
       - name: Verificar se outputs foram criados
