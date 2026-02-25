@@ -171,11 +171,19 @@ jobs:
         run: |
           MONTH="${{ inputs.month }}"
           if [ "$MONTH" = "latest" ]; then
-            # Descobre qual mês foi usado (o mais recente gerado)
             MONTH=$(ls /tmp/rfb_data/ | grep -E '^\d{4}-\d{2}$' | sort | tail -1)
           fi
 
+          OUTPUT_PATH="/tmp/rfb_data/${MONTH}/outputs"
+
+          if [ ! -d "$OUTPUT_PATH" ]; then
+            echo "[WARN] Diretório de outputs não encontrado: $OUTPUT_PATH"
+            echo "Conteúdo de /tmp/rfb_data/:"
+            find /tmp/rfb_data/ -type f | head -50
+            exit 1
+          fi
+
           rclone copy \
-            "/tmp/rfb_data/${MONTH}/outputs" \
+            "$OUTPUT_PATH" \
             "gdrive:${{ inputs.output_gdrive_dir }}/${MONTH}" \
             --progress
