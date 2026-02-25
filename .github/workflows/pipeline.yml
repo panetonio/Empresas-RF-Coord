@@ -166,6 +166,29 @@ jobs:
             $NO_NOMINATIM_ARG
 
       # ------------------------------------------------------------------
+      - name: Verificar se outputs foram criados
+        if: always()
+        run: |
+          MONTH="${{ inputs.month }}"
+          if [ "$MONTH" = "latest" ]; then
+            MONTH=$(ls /tmp/rfb_data/ | grep -E '^\d{4}-\d{2}$' | sort | tail -1)
+          fi
+          
+          echo "Mês definido: $MONTH"
+          echo "Conteúdo de /tmp/rfb_data/:"
+          find /tmp/rfb_data/ -type f -o -type d | head -50
+          
+          OUTPUT_PATH="/tmp/rfb_data/${MONTH}/outputs"
+          echo "Procurando por: $OUTPUT_PATH"
+          
+          if [ ! -d "$OUTPUT_PATH" ]; then
+            echo "[ERROR] Outputs não foram criados!"
+            exit 1
+          else
+            echo "[SUCCESS] Outputs encontrados!"
+          fi
+          
+      # ------------------------------------------------------------------
       - name: Sincronizar outputs para o Google Drive
         if: always()
         run: |
