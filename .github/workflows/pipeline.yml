@@ -188,13 +188,21 @@ jobs:
             echo "[SUCCESS] Outputs encontrados!"
           fi
           
-      # ------------------------------------------------------------------
+       # ------------------------------------------------------------------
       - name: Sincronizar outputs para o Google Drive
         if: always()
         run: |
           MONTH="${{ inputs.month }}"
           if [ "$MONTH" = "latest" ]; then
             MONTH=$(ls /tmp/rfb_data/ | grep -E '^\d{4}-\d{2}$' | sort | tail -1)
+          fi
+
+          # Validate that MONTH was actually found
+          if [ -z "$MONTH" ]; then
+            echo "[ERROR] Não foi possível determinar o mês. Nenhum diretório de mês encontrado em /tmp/rfb_data/"
+            echo "Conteúdo de /tmp/rfb_data/:"
+            ls -la /tmp/rfb_data/
+            exit 1
           fi
 
           OUTPUT_PATH="/tmp/rfb_data/${MONTH}/outputs"
