@@ -3,7 +3,7 @@
 #
 # Uso:
 #   python pipeline.py \
-#     --month 2025-11 \
+#     --month 2025-12 \
 #     --outputs municipio cnpj_estab \
 #     --municipios 5002704 5002472 \
 #     --uf MS \
@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--month", default="latest",
-        help="Mês de referência (ex: 2025-11) ou 'latest' para o mais recente.",
+        help="Mês de referência (ex: 2025-12) ou 'latest' para o mais recente.",
     )
     parser.add_argument(
         "--outputs", nargs="+", required=True,
