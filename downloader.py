@@ -10,6 +10,7 @@
 # =============================================================================
 
 import re
+import subprocess
 import time
 import xml.etree.ElementTree as ET
 import zipfile
@@ -152,6 +153,24 @@ def _download_with_retry(filename: str, url: str, zip_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Conversão de encoding latin1 → utf8 via iconv (streaming, sem RAM extra)
+# ---------------------------------------------------------------------------
+
+def _latin1_to_utf8(src: Path, dst: Path) -> None:
+    """
+    Converte o arquivo src de latin1 para utf8 usando iconv.
+    Processa em streaming — não carrega o arquivo na RAM.
+    O arquivo src é deletado após a conversão.
+    """
+    print(f"[ENCO] Convertendo encoding {src.name} → utf8...")
+    subprocess.run(
+        ["iconv", "-f", "latin1", "-t", "utf-8", str(src), "-o", str(dst)],
+        check=True,
+    )
+    src.unlink()
+
+
+# ---------------------------------------------------------------------------
 # Processamento de um único ZIP
 # ---------------------------------------------------------------------------
 
@@ -163,18 +182,16 @@ def _process_one_zip(
 ) -> Path:
     """
     Pipeline completo para um arquivo ZIP:
-      1. Download em streaming com retry (WebDAV GET com auth)
-      2. Extração do CSV
+      1. Download em streaming com retry
+      2. Extração do CSV (latin1)
       3. Deleção do ZIP
-      4. Conversão CSV → Parquet (Polars scan_csv em streaming, tudo como string)
-      5. Deleção do CSV
+      4. iconv: latin1 → utf8  (streaming, sem custo de RAM)
+      5. Deleção do CSV latin1
+      6. scan_csv utf8 → filtra → Parquet  (streaming via LazyFrame)
+      7. Deleção do CSV utf8
 
     Retorna o caminho do Parquet gerado.
     Pula silenciosamente se o Parquet já existir.
-
-    IMPORTANTE: usa pl.scan_csv com infer_schema_length=0 (LazyFrame) para
-    processar o CSV em streaming sem carregar o arquivo inteiro na RAM —
-    arquivos ESTABELE chegam a ~4 GB descomprimidos.
     """
     parquet_path = dest_dir / f"{filename}.parquet"
 
@@ -195,7 +212,6 @@ def _process_one_zip(
     # 3. Deleta ZIP imediatamente para liberar disco
     zip_path.unlink()
 
-    # 4. Conversão CSV → Parquet via streaming
     is_estabele = "ESTABELE" in filename.upper()
 
     for csv_name in csv_names:
@@ -203,18 +219,19 @@ def _process_one_zip(
         if not csv_path.exists():
             continue
 
+        # 4. Converte latin1 → utf8 via iconv (streaming)
+        utf8_path = csv_path.with_suffix(".utf8.csv")
+        _latin1_to_utf8(csv_path, utf8_path)
+        # csv_path (latin1) já foi deletado dentro de _latin1_to_utf8
+
         print(f"[CONV] Convertendo {csv_name} → {parquet_path.name}...")
 
+        # 5. scan_csv em streaming (utf8, sem carregar tudo na RAM)
         if is_estabele:
-            # scan_csv com infer_schema_length=0 lê tudo como string e processa
-            # em streaming: filtra ativos e descarta colunas sem carregar o CSV
-            # completo na RAM. A contagem de "antes" é removida para evitar
-            # varrer o arquivo duas vezes.
             df = (
                 pl.scan_csv(
-                    csv_path,
+                    utf8_path,
                     separator=";",
-                    encoding="latin1",
                     has_header=False,
                     new_columns=COLS_ESTABELECIMENTO_RAW,
                     infer_schema_length=0,
@@ -229,9 +246,8 @@ def _process_one_zip(
         else:
             df = (
                 pl.scan_csv(
-                    csv_path,
+                    utf8_path,
                     separator=";",
-                    encoding="latin1",
                     has_header=False,
                     new_columns=columns,
                     infer_schema_length=0,
@@ -243,8 +259,8 @@ def _process_one_zip(
 
         df.write_parquet(parquet_path, compression="snappy")
 
-        # 5. Deleta CSV
-        csv_path.unlink()
+        # 6. Deleta CSV utf8
+        utf8_path.unlink()
 
     print(f"[DONE] {parquet_path.name}")
     return parquet_path
