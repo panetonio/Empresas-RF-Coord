@@ -134,11 +134,14 @@ def _process_one_zip(
       1. Download em streaming (WebDAV GET com auth)
       2. Extração do CSV
       3. Deleção do ZIP
-      4. Conversão CSV → Parquet (Polars, tudo como string)
+      4. Conversão CSV → Parquet (Polars scan_csv em streaming, tudo como string)
       5. Deleção do CSV
 
     Retorna o caminho do Parquet gerado.
     Pula silenciosamente se o Parquet já existir.
+
+    IMPORTANTE: usa pl.scan_csv (LazyFrame) em vez de pl.read_csv para evitar
+    carregar o CSV inteiro na RAM — arquivos ESTABELE chegam a ~4 GB descomprimidos.
     """
     parquet_path = dest_dir / f"{filename}.parquet"
 
@@ -164,7 +167,7 @@ def _process_one_zip(
     # 3. Deleta ZIP imediatamente para liberar disco
     zip_path.unlink()
 
-    # 4. Conversão CSV → Parquet
+    # 4. Conversão CSV → Parquet via streaming
     is_estabele = "ESTABELE" in filename.upper()
 
     for csv_name in csv_names:
@@ -175,36 +178,41 @@ def _process_one_zip(
         print(f"[CONV] Convertendo {csv_name} → {parquet_path.name}...")
 
         if is_estabele:
-            # Lê com todas as colunas para mapear posições corretas,
-            # filtra apenas ativos e descarta colunas desnecessárias.
-            df = pl.read_csv(
+            # scan_csv lê o arquivo em streaming: filtra ativos e descarta
+            # colunas desnecessárias sem jamais carregar o CSV completo na RAM.
+            lf = pl.scan_csv(
                 csv_path,
                 separator=";",
                 encoding="latin1",
                 has_header=False,
                 new_columns=COLS_ESTABELECIMENTO_RAW,
-                infer_schema_length=0,
+                infer_schema=False,          # tudo como string
                 truncate_ragged_lines=True,
                 null_values=[""],
             )
-            antes = len(df)
+            # Conta total apenas para o log (operação barata sobre LazyFrame)
+            antes = lf.select(pl.len()).collect().item()
             df = (
-                df
+                lf
                 .filter(pl.col("SITUACAO_CADASTRAL") == "02")
                 .select(COLS_ESTABELECIMENTO)
+                .collect()
             )
             depois = len(df)
             print(f"[FILT] Ativos: {depois:,}/{antes:,} ({depois/antes*100:.1f}%)")
         else:
-            df = pl.read_csv(
-                csv_path,
-                separator=";",
-                encoding="latin1",
-                has_header=False,
-                new_columns=columns,
-                infer_schema_length=0,
-                truncate_ragged_lines=True,
-                null_values=[""],
+            df = (
+                pl.scan_csv(
+                    csv_path,
+                    separator=";",
+                    encoding="latin1",
+                    has_header=False,
+                    new_columns=columns,
+                    infer_schema=False,
+                    truncate_ragged_lines=True,
+                    null_values=[""],
+                )
+                .collect()
             )
 
         df.write_parquet(parquet_path, compression="snappy")
