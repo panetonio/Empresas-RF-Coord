@@ -19,7 +19,7 @@ import polars as pl
 import requests
 from requests.auth import HTTPBasicAuth
 
-from config import FILE_TYPES
+from config import COLS_ESTABELECIMENTO, COLS_ESTABELECIMENTO_RAW, FILE_TYPES
 
 # ---------------------------------------------------------------------------
 # Configuração da nova plataforma Nextcloud
@@ -165,22 +165,48 @@ def _process_one_zip(
     zip_path.unlink()
 
     # 4. Conversão CSV → Parquet
+    is_estabele = "ESTABELE" in filename.upper()
+
     for csv_name in csv_names:
         csv_path = dest_dir / csv_name
         if not csv_path.exists():
             continue
 
         print(f"[CONV] Convertendo {csv_name} → {parquet_path.name}...")
-        df = pl.read_csv(
-            csv_path,
-            separator=";",
-            encoding="latin1",
-            has_header=False,
-            new_columns=columns,
-            infer_schema_length=0,       # tudo como Utf8
-            truncate_ragged_lines=True,
-            null_values=[""],
-        )
+
+        if is_estabele:
+            # Lê com todas as colunas para mapear posições corretas,
+            # filtra apenas ativos e descarta colunas desnecessárias.
+            df = pl.read_csv(
+                csv_path,
+                separator=";",
+                encoding="latin1",
+                has_header=False,
+                new_columns=COLS_ESTABELECIMENTO_RAW,
+                infer_schema_length=0,
+                truncate_ragged_lines=True,
+                null_values=[""],
+            )
+            antes = len(df)
+            df = (
+                df
+                .filter(pl.col("SITUACAO_CADASTRAL") == "02")
+                .select(COLS_ESTABELECIMENTO)
+            )
+            depois = len(df)
+            print(f"[FILT] Ativos: {depois:,}/{antes:,} ({depois/antes*100:.1f}%)")
+        else:
+            df = pl.read_csv(
+                csv_path,
+                separator=";",
+                encoding="latin1",
+                has_header=False,
+                new_columns=columns,
+                infer_schema_length=0,
+                truncate_ragged_lines=True,
+                null_values=[""],
+            )
+
         df.write_parquet(parquet_path, compression="snappy")
 
         # 5. Deleta CSV
