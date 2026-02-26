@@ -41,4 +41,4 @@ FILE_TYPES = {
 }
 
 # Tabela de mapeamento SIAFI ↔ IBGE (relativa à raiz do projeto)
-SIAFI_MAP_PATH = "data/Municipios_Parquet_Siafi.csv"
+SIAFI_MAP_PATH = "data/Municipios_IBGE_SIAFI.csv"
