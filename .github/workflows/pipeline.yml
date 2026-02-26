@@ -132,6 +132,8 @@ jobs:
 
       # ------------------------------------------------------------------
       - name: Executar pipeline
+        env:
+          PYTHONUNBUFFERED: "1"   # ← adicionar isso
         run: |
           # Monta argumentos opcionais dinamicamente
           MUNICIPIOS_ARG=""
