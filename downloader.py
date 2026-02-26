@@ -10,6 +10,7 @@
 # =============================================================================
 
 import re
+import time
 import xml.etree.ElementTree as ET
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -33,6 +34,10 @@ AUTH            = HTTPBasicAuth(SHARE_TOKEN, "")
 
 # Namespace WebDAV usado nas respostas XML
 _DAV_NS = {"d": "DAV:"}
+
+# Número de tentativas para download e espera entre elas
+_DOWNLOAD_RETRIES = 3
+_RETRY_WAIT_SECS  = 30
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +125,33 @@ def list_zip_files(month: str, file_type: str) -> list[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# Download com retry
+# ---------------------------------------------------------------------------
+
+def _download_with_retry(filename: str, url: str, zip_path: Path) -> None:
+    """
+    Baixa um arquivo ZIP com até _DOWNLOAD_RETRIES tentativas.
+    Remove arquivo parcial antes de cada nova tentativa.
+    """
+    for attempt in range(1, _DOWNLOAD_RETRIES + 1):
+        try:
+            print(f"[DOWN] Baixando {filename} (tentativa {attempt}/{_DOWNLOAD_RETRIES})...")
+            with requests.get(url, auth=AUTH, stream=True, timeout=600) as r:
+                r.raise_for_status()
+                with open(zip_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8 * 1024 * 1024):
+                        f.write(chunk)
+            return  # sucesso
+        except Exception as exc:
+            zip_path.unlink(missing_ok=True)
+            if attempt < _DOWNLOAD_RETRIES:
+                print(f"[RETRY] {filename} falhou ({exc}). Aguardando {_RETRY_WAIT_SECS}s...")
+                time.sleep(_RETRY_WAIT_SECS)
+            else:
+                raise
+
+
+# ---------------------------------------------------------------------------
 # Processamento de um único ZIP
 # ---------------------------------------------------------------------------
 
@@ -131,7 +163,7 @@ def _process_one_zip(
 ) -> Path:
     """
     Pipeline completo para um arquivo ZIP:
-      1. Download em streaming (WebDAV GET com auth)
+      1. Download em streaming com retry (WebDAV GET com auth)
       2. Extração do CSV
       3. Deleção do ZIP
       4. Conversão CSV → Parquet (Polars scan_csv em streaming, tudo como string)
@@ -140,8 +172,9 @@ def _process_one_zip(
     Retorna o caminho do Parquet gerado.
     Pula silenciosamente se o Parquet já existir.
 
-    IMPORTANTE: usa pl.scan_csv (LazyFrame) em vez de pl.read_csv para evitar
-    carregar o CSV inteiro na RAM — arquivos ESTABELE chegam a ~4 GB descomprimidos.
+    IMPORTANTE: usa pl.scan_csv com infer_schema_length=0 (LazyFrame) para
+    processar o CSV em streaming sem carregar o arquivo inteiro na RAM —
+    arquivos ESTABELE chegam a ~4 GB descomprimidos.
     """
     parquet_path = dest_dir / f"{filename}.parquet"
 
@@ -149,14 +182,9 @@ def _process_one_zip(
         print(f"[SKIP] {filename} — parquet já existe.")
         return parquet_path
 
-    # 1. Download
+    # 1. Download com retry
     zip_path = dest_dir / filename
-    print(f"[DOWN] Baixando {filename}...")
-    with requests.get(url, auth=AUTH, stream=True, timeout=600) as r:
-        r.raise_for_status()
-        with open(zip_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8 * 1024 * 1024):
-                f.write(chunk)
+    _download_with_retry(filename, url, zip_path)
 
     # 2. Extração
     print(f"[EXTR] Extraindo {filename}...")
@@ -178,28 +206,26 @@ def _process_one_zip(
         print(f"[CONV] Convertendo {csv_name} → {parquet_path.name}...")
 
         if is_estabele:
-            # scan_csv lê o arquivo em streaming: filtra ativos e descarta
-            # colunas desnecessárias sem jamais carregar o CSV completo na RAM.
-            lf = pl.scan_csv(
-                csv_path,
-                separator=";",
-                encoding="latin1",
-                has_header=False,
-                new_columns=COLS_ESTABELECIMENTO_RAW,
-                infer_schema=False,          # tudo como string
-                truncate_ragged_lines=True,
-                null_values=[""],
-            )
-            # Conta total apenas para o log (operação barata sobre LazyFrame)
-            antes = lf.select(pl.len()).collect().item()
+            # scan_csv com infer_schema_length=0 lê tudo como string e processa
+            # em streaming: filtra ativos e descarta colunas sem carregar o CSV
+            # completo na RAM. A contagem de "antes" é removida para evitar
+            # varrer o arquivo duas vezes.
             df = (
-                lf
+                pl.scan_csv(
+                    csv_path,
+                    separator=";",
+                    encoding="latin1",
+                    has_header=False,
+                    new_columns=COLS_ESTABELECIMENTO_RAW,
+                    infer_schema_length=0,
+                    truncate_ragged_lines=True,
+                    null_values=[""],
+                )
                 .filter(pl.col("SITUACAO_CADASTRAL") == "02")
                 .select(COLS_ESTABELECIMENTO)
                 .collect()
             )
-            depois = len(df)
-            print(f"[FILT] Ativos: {depois:,}/{antes:,} ({depois/antes*100:.1f}%)")
+            print(f"[FILT] Ativos retidos: {len(df):,}")
         else:
             df = (
                 pl.scan_csv(
@@ -208,7 +234,7 @@ def _process_one_zip(
                     encoding="latin1",
                     has_header=False,
                     new_columns=columns,
-                    infer_schema=False,
+                    infer_schema_length=0,
                     truncate_ragged_lines=True,
                     null_values=[""],
                 )
