@@ -5,6 +5,11 @@
 #   • filter_by_municipio  → um Parquet por município (código SIAFI)
 #   • filter_cnpj_estab    → Parquet de estabelecimentos filtrados por CNPJ
 #   • filter_cnpj_empresa  → Parquet de empresas filtradas por CNPJ_BASICO
+#
+# IMPORTANTE: todos os filtros processam um arquivo Parquet por vez para
+# evitar OOM no runner do GitHub Actions (7 GB de RAM). O LazyFrame global
+# (scan_parquet com wildcard) foi substituído por um loop explícito que lê,
+# filtra e libera cada arquivo individualmente.
 # =============================================================================
 
 from pathlib import Path
@@ -69,14 +74,14 @@ def siafi_to_ibge(siafi_codes: list[str], df_map: pl.DataFrame) -> list[int]:
 # Utilidade interna
 # ---------------------------------------------------------------------------
 
-def _scan_parquet_dir(parquet_dir: Path) -> pl.LazyFrame:
-    """Abre todos os Parquets de um diretório como LazyFrame."""
-    files = list(parquet_dir.glob("*.parquet"))
+def _list_parquet_files(parquet_dir: Path) -> list[Path]:
+    """Retorna lista de arquivos .parquet em um diretório. Lança erro se vazio."""
+    files = sorted(parquet_dir.glob("*.parquet"))
     if not files:
         raise FileNotFoundError(
             f"Nenhum arquivo .parquet encontrado em: {parquet_dir}"
         )
-    return pl.scan_parquet(str(parquet_dir / "*.parquet"))
+    return files
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +95,7 @@ def filter_by_municipio(
 ) -> dict[int, Path]:
     """
     Filtra os Parquets de ESTABELE por código SIAFI do município.
+    Processa um arquivo por vez para controlar o uso de memória.
     Gera um arquivo de saída independente por município.
 
     Args:
@@ -100,23 +106,43 @@ def filter_by_municipio(
     Retorna: {ibge_code: path_do_parquet_filtrado}
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    lf = _scan_parquet_dir(parquet_dir)
-    outputs: dict[int, Path] = {}
+    files = _list_parquet_files(parquet_dir)
 
+    # Prepara acumuladores por município
+    siafi_to_ibge_local = {
+        str(info["siafi"]): ibge for ibge, info in ibge_info.items()
+    }
+    acumuladores: dict[int, list[pl.DataFrame]] = {ibge: [] for ibge in ibge_info}
+
+    for f in files:
+        print(f"[FILT] Escaneando {f.name}...")
+        df = (
+            pl.scan_parquet(str(f))
+            .filter(pl.col("MUNICIPIO").is_in(list(siafi_to_ibge_local.keys())))
+            .collect()
+        )
+        if df.is_empty():
+            continue
+
+        # Distribui as linhas para cada município encontrado
+        for siafi_str, ibge in siafi_to_ibge_local.items():
+            parte = df.filter(pl.col("MUNICIPIO") == siafi_str)
+            if len(parte) > 0:
+                acumuladores[ibge].append(parte)
+
+    outputs: dict[int, Path] = {}
     for ibge, info in ibge_info.items():
-        siafi_str = str(info["siafi"])
+        partes = acumuladores[ibge]
         nome_safe = info["nome"].replace(" ", "_").replace("/", "-")
         out_path = output_dir / f"ESTAB_{nome_safe}_{ibge}.parquet"
 
-        print(f"[FILT] {info['nome']} (SIAFI={siafi_str})...")
-        df = lf.filter(pl.col("MUNICIPIO") == siafi_str).collect()
-
-        if df.is_empty():
+        if not partes:
             print(f"[WARN] Nenhum registro encontrado para {info['nome']}.")
             continue
 
-        df.write_parquet(out_path, compression="snappy")
-        print(f"[SAVE] {out_path.name} — {len(df):,} registros")
+        df_final = pl.concat(partes, how="diagonal")
+        df_final.write_parquet(out_path, compression="snappy")
+        print(f"[SAVE] {out_path.name} — {len(df_final):,} registros")
         outputs[ibge] = out_path
 
     return outputs
@@ -157,6 +183,7 @@ def filter_cnpj_estab(
     """
     Filtra Parquets de ESTABELE pelo CNPJ completo de 14 dígitos
     (CNPJ_BASICO + CNPJ_ORDEM + CNPJ_DV).
+    Processa um arquivo por vez para controlar o uso de memória.
 
     Args:
         parquet_dir: Diretório com os Parquets de ESTABELE
@@ -166,24 +193,31 @@ def filter_cnpj_estab(
     Retorna: output_path
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    lf = _scan_parquet_dir(parquet_dir)
+    files = _list_parquet_files(parquet_dir)
+    partes: list[pl.DataFrame] = []
 
-    df = (
-        lf
-        .with_columns(
-            (
-                pl.col("CNPJ_BASICO").str.zfill(8)
-                + pl.col("CNPJ_ORDEM").str.zfill(4)
-                + pl.col("CNPJ_DV").str.zfill(2)
-            ).alias("_CNPJ_FULL")
+    for f in files:
+        print(f"[FILT] Escaneando {f.name}...")
+        df = (
+            pl.scan_parquet(str(f))
+            .with_columns(
+                (
+                    pl.col("CNPJ_BASICO").str.zfill(8)
+                    + pl.col("CNPJ_ORDEM").str.zfill(4)
+                    + pl.col("CNPJ_DV").str.zfill(2)
+                ).alias("_CNPJ_FULL")
+            )
+            .filter(pl.col("_CNPJ_FULL").is_in(cnpjs))
+            .drop("_CNPJ_FULL")
+            .collect()
         )
-        .filter(pl.col("_CNPJ_FULL").is_in(cnpjs))
-        .drop("_CNPJ_FULL")
-        .collect()
-    )
+        if len(df) > 0:
+            partes.append(df)
+            print(f"[FILT] → {len(df):,} matches em {f.name}")
 
-    df.write_parquet(output_path, compression="snappy")
-    print(f"[SAVE] {output_path.name} — {len(df):,} registros")
+    df_final = pl.concat(partes, how="diagonal") if partes else pl.DataFrame()
+    df_final.write_parquet(output_path, compression="snappy")
+    print(f"[SAVE] {output_path.name} — {len(df_final):,} registros")
     return output_path
 
 
@@ -198,6 +232,7 @@ def filter_cnpj_empresa(
 ) -> Path:
     """
     Filtra Parquets de EMPRE pelo CNPJ_BASICO (8 primeiros dígitos do CNPJ).
+    Processa um arquivo por vez para controlar o uso de memória.
 
     Args:
         parquet_dir: Diretório com os Parquets de EMPRE
@@ -209,16 +244,23 @@ def filter_cnpj_empresa(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     # Garante zeros à esquerda em ambos os lados da comparação
     basicos = {c[:8].zfill(8) for c in cnpjs}
-    lf = _scan_parquet_dir(parquet_dir)
+    files = _list_parquet_files(parquet_dir)
+    partes: list[pl.DataFrame] = []
 
-    df = (
-        lf
-        .with_columns(pl.col("CNPJ_BASICO").str.zfill(8).alias("_BASICO_NORM"))
-        .filter(pl.col("_BASICO_NORM").is_in(basicos))
-        .drop("_BASICO_NORM")
-        .collect()
-    )
+    for f in files:
+        print(f"[FILT] Escaneando {f.name}...")
+        df = (
+            pl.scan_parquet(str(f))
+            .with_columns(pl.col("CNPJ_BASICO").str.zfill(8).alias("_BASICO_NORM"))
+            .filter(pl.col("_BASICO_NORM").is_in(basicos))
+            .drop("_BASICO_NORM")
+            .collect()
+        )
+        if len(df) > 0:
+            partes.append(df)
+            print(f"[FILT] → {len(df):,} matches em {f.name}")
 
-    df.write_parquet(output_path, compression="snappy")
-    print(f"[SAVE] {output_path.name} — {len(df):,} registros")
+    df_final = pl.concat(partes, how="diagonal") if partes else pl.DataFrame()
+    df_final.write_parquet(output_path, compression="snappy")
+    print(f"[SAVE] {output_path.name} — {len(df_final):,} registros")
     return output_path
