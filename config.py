@@ -13,7 +13,7 @@ COLS_ESTABELECIMENTO_RAW = [
     "DDD_FAX", "FAX", "EMAIL", "SITUACAO_ESPECIAL", "DATA_SITUACAO_ESPECIAL",
 ]
 
-# Colunas mantidas após limpeza — descarta dados irrelevantes para os outputs
+# Colunas mantidas após limpeza
 COLS_ESTABELECIMENTO = [
     "CNPJ_BASICO", "CNPJ_ORDEM", "CNPJ_DV", "MATRIZ_FILIAL",
     "NOME_FANTASIA", "SITUACAO_CADASTRAL", "DATA_SITUACAO_CADASTRAL",
@@ -23,15 +23,10 @@ COLS_ESTABELECIMENTO = [
     "CEP", "UF", "MUNICIPIO", "DDD1", "TELEFONE_1",
 ]
 
-# Colunas descartadas:
-#   NOME_CIDADE_EXTERIOR, PAIS          — empresas estrangeiras (irrelevante)
-#   DDD2, TELEFONE_2, DDD_FAX, FAX      — contatos secundários
-#   EMAIL                               — não utilizado nos outputs
-#   SITUACAO_ESPECIAL, DATA_SITUACAO_ESPECIAL — irrelevante para ativos
-
+# Colunas descartadas de EMPRE: QUALIFICACAO_RESPONSAVEL, ENTE_FEDERATIVO
 COLS_EMPRESA = [
     "CNPJ_BASICO", "RAZAO_SOCIAL", "NATUREZA_JURIDICA",
-    "QUALIFICACAO_RESPONSAVEL", "CAPITAL_SOCIAL", "PORTE", "ENTE_FEDERATIVO",
+    "CAPITAL_SOCIAL", "PORTE",
 ]
 
 # Padrão do nome dos arquivos ZIP na Receita Federal
