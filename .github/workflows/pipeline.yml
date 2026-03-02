@@ -8,7 +8,7 @@
 #                   configuração do Google Drive (remote chamado "gdrive").
 # =============================================================================
 
-name: RFB Pipeline
+name: RFB Extração Total
 
 on:
   workflow_dispatch:
