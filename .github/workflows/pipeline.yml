@@ -1,5 +1,11 @@
 # =============================================================================
 # .github/workflows/pipeline.yml
+#
+# Workflow manual (workflow_dispatch) para executar o pipeline RFB.
+#
+# Pré-requisitos (GitHub Secrets):
+#   RCLONE_CONFIG — conteúdo completo do arquivo rclone.conf com a
+#                   configuração do Google Drive (remote chamado "gdrive").
 # =============================================================================
 
 name: RFB Pipeline
@@ -12,31 +18,6 @@ on:
         required: false
         default: "latest"
 
-      outputs:
-        description: "Outputs desejados (separados por espaço): municipio cnpj_estab cnpj_empresa"
-        required: true
-        default: "municipio"
-
-      municipios:
-        description: "Códigos IBGE dos municípios (separados por espaço, ex: 5002704 5002472)"
-        required: false
-        default: ""
-
-      uf:
-        description: "UF do arquivo de coordenadas (ex: MS)"
-        required: false
-        default: ""
-
-      cnpjs_gdrive_path:
-        description: "Caminho do XLSX de CNPJs no Google Drive (ex: MyDrive/cnpjs.xlsx)"
-        required: false
-        default: ""
-
-      coords_gdrive_dir:
-        description: "Diretório dos arquivos coord_{UF}.parquet no Google Drive (ex: MyDrive/coords)"
-        required: false
-        default: "MyDrive/CNPJs/coords"
-
       output_gdrive_dir:
         description: "Diretório de destino dos outputs no Google Drive (ex: MyDrive/CNPJs/outputs)"
         required: false
@@ -46,11 +27,6 @@ on:
         description: "Máximo de downloads simultâneos (padrão: 2)"
         required: false
         default: "2"
-
-      no_nominatim:
-        description: "Desabilitar Nominatim? (true/false)"
-        required: false
-        default: "false"
 
 jobs:
   run-pipeline:
@@ -93,86 +69,17 @@ jobs:
           rclone listremotes
 
       # ------------------------------------------------------------------
-      - name: Criar diretórios locais de trabalho
-        run: |
-          mkdir -p /tmp/rfb_data/coords
-
-      # ------------------------------------------------------------------
-      # Para output "municipio": baixa apenas o coord_{UF}.parquet informado.
-      # Para output "cnpj_estab": baixa TODOS os arquivos do diretório de coords,
-      # pois os estabelecimentos podem pertencer a qualquer UF do Brasil.
-      - name: Baixar arquivos de coordenadas do Google Drive
-        run: |
-          OUTPUTS="${{ inputs.outputs }}"
-          UF="${{ inputs.uf }}"
-
-          if echo "$OUTPUTS" | grep -qw "cnpj_estab"; then
-            echo "[INFO] cnpj_estab solicitado — baixando todos os arquivos de coords..."
-            rclone copy \
-              "gdrive:${{ inputs.coords_gdrive_dir }}" \
-              /tmp/rfb_data/coords/ \
-              --include "coord_*.parquet" \
-              --progress
-          elif [ -n "$UF" ]; then
-            echo "[INFO] Baixando coord_${UF}.parquet..."
-            rclone copy \
-              "gdrive:${{ inputs.coords_gdrive_dir }}/coord_${UF}.parquet" \
-              /tmp/rfb_data/coords/
-          fi
-
-          echo "[INFO] Arquivos de coords disponíveis:"
-          ls /tmp/rfb_data/coords/ || echo "(nenhum)"
-
-      # ------------------------------------------------------------------
-      - name: Baixar XLSX de CNPJs do Google Drive
-        if: ${{ inputs.cnpjs_gdrive_path != '' }}
-        run: |
-          rclone copy \
-            "gdrive:${{ inputs.cnpjs_gdrive_path }}" \
-            /tmp/rfb_data/
-          FILENAME=$(basename "${{ inputs.cnpjs_gdrive_path }}")
-          if [ "$FILENAME" != "cnpjs.xlsx" ]; then
-            mv "/tmp/rfb_data/${FILENAME}" /tmp/rfb_data/cnpjs.xlsx
-          fi
-
-      # ------------------------------------------------------------------
       - name: Executar pipeline
         env:
           PYTHONUNBUFFERED: "1"
         run: |
-          MUNICIPIOS_ARG=""
-          if [ -n "${{ inputs.municipios }}" ]; then
-            MUNICIPIOS_ARG="--municipios ${{ inputs.municipios }}"
-          fi
-
-          UF_ARG=""
-          if [ -n "${{ inputs.uf }}" ]; then
-            UF_ARG="--uf ${{ inputs.uf }}"
-          fi
-
-          CNPJS_ARG=""
-          if [ -n "${{ inputs.cnpjs_gdrive_path }}" ]; then
-            CNPJS_ARG="--cnpjs-file /tmp/rfb_data/cnpjs.xlsx"
-          fi
-
-          NO_NOMINATIM_ARG=""
-          if [ "${{ inputs.no_nominatim }}" = "true" ]; then
-            NO_NOMINATIM_ARG="--no-nominatim"
-          fi
-
           set -e
           python pipeline.py \
-            --month    "${{ inputs.month }}" \
-            --outputs  ${{ inputs.outputs }} \
-            --base-dir /tmp/rfb_data \
-            --coords-dir /tmp/rfb_data/coords \
-            --max-parallel "${{ inputs.max_parallel }}" \
-            $MUNICIPIOS_ARG \
-            $UF_ARG \
-            $CNPJS_ARG \
-            $NO_NOMINATIM_ARG
+            --month        "${{ inputs.month }}" \
+            --base-dir     /tmp/rfb_data \
+            --max-parallel "${{ inputs.max_parallel }}"
 
-          echo "===== Contents of /tmp/rfb_data after pipeline ====="
+          echo "===== Conteúdo de /tmp/rfb_data após pipeline ====="
           find /tmp/rfb_data/ -type f | head -100
 
       # ------------------------------------------------------------------
@@ -181,18 +88,19 @@ jobs:
         run: |
           MONTH="${{ inputs.month }}"
           if [ "$MONTH" = "latest" ]; then
-            MONTH=$(find /tmp/rfb_data/ -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]' | sort | tail -1 | xargs basename)
+            MONTH=$(find /tmp/rfb_data/ -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]' \
+                    | sort | tail -1 | xargs basename)
           fi
 
           echo "Mês definido: $MONTH"
-          OUTPUT_PATH="/tmp/rfb_data/${MONTH}/outputs"
-          echo "Procurando por: $OUTPUT_PATH"
+          OUTPUT_PATH="/tmp/rfb_data/${MONTH}"
 
-          if [ ! -d "$OUTPUT_PATH" ]; then
-            echo "[ERROR] Outputs não foram criados!"
+          if [ -z "$(find "$OUTPUT_PATH" -name '*.parquet' 2>/dev/null | head -1)" ]; then
+            echo "[ERROR] Nenhum Parquet encontrado em $OUTPUT_PATH"
             exit 1
           else
-            echo "[SUCCESS] Outputs encontrados!"
+            echo "[SUCCESS] Parquets encontrados em $OUTPUT_PATH"
+            find "$OUTPUT_PATH" -name '*.parquet' | sort
           fi
 
       # ------------------------------------------------------------------
@@ -201,24 +109,16 @@ jobs:
         run: |
           MONTH="${{ inputs.month }}"
           if [ "$MONTH" = "latest" ]; then
-            MONTH=$(find /tmp/rfb_data/ -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]' | sort | tail -1 | xargs basename)
+            MONTH=$(find /tmp/rfb_data/ -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]' \
+                    | sort | tail -1 | xargs basename)
           fi
 
           if [ -z "$MONTH" ]; then
             echo "[ERROR] Não foi possível determinar o mês."
-            ls -la /tmp/rfb_data/
-            exit 1
-          fi
-
-          OUTPUT_PATH="/tmp/rfb_data/${MONTH}/outputs"
-
-          if [ ! -d "$OUTPUT_PATH" ]; then
-            echo "[WARN] Diretório de outputs não encontrado: $OUTPUT_PATH"
-            find /tmp/rfb_data/ -type f | head -50
             exit 1
           fi
 
           rclone copy \
-            "$OUTPUT_PATH" \
+            "/tmp/rfb_data/${MONTH}" \
             "gdrive:${{ inputs.output_gdrive_dir }}/${MONTH}" \
             --progress
