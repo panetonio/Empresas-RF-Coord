@@ -1,16 +1,5 @@
 # =============================================================================
 # .github/workflows/pipeline.yml
-#
-# Workflow manual (workflow_dispatch) para executar o pipeline RFB.
-#
-# Pré-requisitos (GitHub Secrets):
-#   RCLONE_CONFIG — conteúdo completo do arquivo rclone.conf com a
-#                   configuração do Google Drive (remote chamado "gdrive").
-#
-# Como gerar o RCLONE_CONFIG:
-#   1. Instale rclone localmente
-#   2. Execute: rclone config  → crie um remote "gdrive" do tipo "drive"
-#   3. Copie o conteúdo de ~/.config/rclone/rclone.conf para o Secret
 # =============================================================================
 
 name: RFB Pipeline
@@ -66,8 +55,6 @@ on:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    # GitHub Actions fornece ~14 GB de disco livre — suficiente para
-    # os arquivos temporários (ZIP+CSV+Parquet são deletados em sequência).
 
     steps:
       # ------------------------------------------------------------------
@@ -104,19 +91,37 @@ jobs:
           cat ~/.config/rclone/rclone.conf
           echo "=== Remotes disponíveis ==="
           rclone listremotes
-          
+
       # ------------------------------------------------------------------
       - name: Criar diretórios locais de trabalho
         run: |
           mkdir -p /tmp/rfb_data/coords
 
       # ------------------------------------------------------------------
-      - name: Baixar arquivo de coordenadas do Google Drive
-        if: ${{ inputs.uf != '' }}
+      # Para output "municipio": baixa apenas o coord_{UF}.parquet informado.
+      # Para output "cnpj_estab": baixa TODOS os arquivos do diretório de coords,
+      # pois os estabelecimentos podem pertencer a qualquer UF do Brasil.
+      - name: Baixar arquivos de coordenadas do Google Drive
         run: |
-          rclone copy \
-            "gdrive:${{ inputs.coords_gdrive_dir }}/coord_${{ inputs.uf }}.parquet" \
-            /tmp/rfb_data/coords/
+          OUTPUTS="${{ inputs.outputs }}"
+          UF="${{ inputs.uf }}"
+
+          if echo "$OUTPUTS" | grep -qw "cnpj_estab"; then
+            echo "[INFO] cnpj_estab solicitado — baixando todos os arquivos de coords..."
+            rclone copy \
+              "gdrive:${{ inputs.coords_gdrive_dir }}" \
+              /tmp/rfb_data/coords/ \
+              --include "coord_*.parquet" \
+              --progress
+          elif [ -n "$UF" ]; then
+            echo "[INFO] Baixando coord_${UF}.parquet..."
+            rclone copy \
+              "gdrive:${{ inputs.coords_gdrive_dir }}/coord_${UF}.parquet" \
+              /tmp/rfb_data/coords/
+          fi
+
+          echo "[INFO] Arquivos de coords disponíveis:"
+          ls /tmp/rfb_data/coords/ || echo "(nenhum)"
 
       # ------------------------------------------------------------------
       - name: Baixar XLSX de CNPJs do Google Drive
@@ -133,30 +138,29 @@ jobs:
       # ------------------------------------------------------------------
       - name: Executar pipeline
         env:
-          PYTHONUNBUFFERED: "1"   # ← adicionar isso
+          PYTHONUNBUFFERED: "1"
         run: |
-          # Monta argumentos opcionais dinamicamente
           MUNICIPIOS_ARG=""
           if [ -n "${{ inputs.municipios }}" ]; then
             MUNICIPIOS_ARG="--municipios ${{ inputs.municipios }}"
           fi
-      
+
           UF_ARG=""
           if [ -n "${{ inputs.uf }}" ]; then
             UF_ARG="--uf ${{ inputs.uf }}"
           fi
-      
+
           CNPJS_ARG=""
           if [ -n "${{ inputs.cnpjs_gdrive_path }}" ]; then
             CNPJS_ARG="--cnpjs-file /tmp/rfb_data/cnpjs.xlsx"
           fi
-      
+
           NO_NOMINATIM_ARG=""
           if [ "${{ inputs.no_nominatim }}" = "true" ]; then
             NO_NOMINATIM_ARG="--no-nominatim"
           fi
-      
-          set -e  # Exit on any error
+
+          set -e
           python pipeline.py \
             --month    "${{ inputs.month }}" \
             --outputs  ${{ inputs.outputs }} \
@@ -167,8 +171,7 @@ jobs:
             $UF_ARG \
             $CNPJS_ARG \
             $NO_NOMINATIM_ARG
-          
-          # Debug: show what was created
+
           echo "===== Contents of /tmp/rfb_data after pipeline ====="
           find /tmp/rfb_data/ -type f | head -100
 
@@ -180,22 +183,19 @@ jobs:
           if [ "$MONTH" = "latest" ]; then
             MONTH=$(find /tmp/rfb_data/ -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]' | sort | tail -1 | xargs basename)
           fi
-          
+
           echo "Mês definido: $MONTH"
-          echo "Conteúdo de /tmp/rfb_data/:"
-          find /tmp/rfb_data/ -type f -o -type d | head -50
-          
           OUTPUT_PATH="/tmp/rfb_data/${MONTH}/outputs"
           echo "Procurando por: $OUTPUT_PATH"
-          
+
           if [ ! -d "$OUTPUT_PATH" ]; then
             echo "[ERROR] Outputs não foram criados!"
             exit 1
           else
             echo "[SUCCESS] Outputs encontrados!"
           fi
-          
-       # ------------------------------------------------------------------
+
+      # ------------------------------------------------------------------
       - name: Sincronizar outputs para o Google Drive
         if: success()
         run: |
@@ -204,10 +204,8 @@ jobs:
             MONTH=$(find /tmp/rfb_data/ -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]' | sort | tail -1 | xargs basename)
           fi
 
-          # Validate that MONTH was actually found
           if [ -z "$MONTH" ]; then
-            echo "[ERROR] Não foi possível determinar o mês. Nenhum diretório de mês encontrado em /tmp/rfb_data/"
-            echo "Conteúdo de /tmp/rfb_data/:"
+            echo "[ERROR] Não foi possível determinar o mês."
             ls -la /tmp/rfb_data/
             exit 1
           fi
@@ -216,7 +214,6 @@ jobs:
 
           if [ ! -d "$OUTPUT_PATH" ]; then
             echo "[WARN] Diretório de outputs não encontrado: $OUTPUT_PATH"
-            echo "Conteúdo de /tmp/rfb_data/:"
             find /tmp/rfb_data/ -type f | head -50
             exit 1
           fi
