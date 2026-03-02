@@ -1,14 +1,5 @@
 # =============================================================================
 # pipeline.py — Orquestração do pipeline RFB.
-#
-# Uso:
-#   python pipeline.py \
-#     --month 2025-12 \
-#     --outputs municipio cnpj_estab \
-#     --municipios 5002704 5002472 \
-#     --uf MS \
-#     --base-dir /tmp/rfb_data \
-#     --cnpjs-file /tmp/cnpjs.xlsx
 # =============================================================================
 
 import argparse
@@ -29,6 +20,9 @@ from filterer import (
     load_siafi_map,
     siafi_to_ibge,
 )
+
+# UFs que não têm arquivo de coordenadas e devem ser ignoradas no enriquecimento
+_UFS_INVALIDAS = {"EX"}  # EX = exterior (código RFB para empresas estrangeiras)
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--uf", type=str,
         help="UF para arquivo de coordenadas (ex: MS). "
-             "Obrigatório para outputs de estabelecimentos.",
+             "Obrigatório para output 'municipio'.",
     )
     parser.add_argument(
         "--cnpjs-file", type=str,
@@ -85,10 +79,7 @@ def parse_args() -> argparse.Namespace:
 
     args = parser.parse_args()
 
-    # Validações cruzadas
-    needs_estab  = "municipio"    in args.outputs or "cnpj_estab"   in args.outputs
-    needs_empresa = "cnpj_empresa" in args.outputs
-    needs_cnpj   = "cnpj_estab"  in args.outputs or "cnpj_empresa"  in args.outputs
+    needs_cnpj = "cnpj_estab" in args.outputs or "cnpj_empresa" in args.outputs
 
     if "municipio" in args.outputs and not args.municipios:
         parser.error("--municipios é obrigatório para o output 'municipio'.")
@@ -96,8 +87,8 @@ def parse_args() -> argparse.Namespace:
     if needs_cnpj and not args.cnpjs_file:
         parser.error("--cnpjs-file é obrigatório para outputs 'cnpj_estab' e 'cnpj_empresa'.")
 
-    if needs_estab and not args.uf:
-        parser.error("--uf é obrigatório para outputs que enriquecem estabelecimentos.")
+    if "municipio" in args.outputs and not args.uf:
+        parser.error("--uf é obrigatório para o output 'municipio'.")
 
     return args
 
@@ -125,14 +116,14 @@ def _enrich_and_save(
 def _enrich_cnpj_estab(
     raw_path: Path,
     out_path: Path,
-    uf_arg: str,
     coords_dir: Path,
     df_map: pl.DataFrame,
     use_nominatim: bool,
 ) -> None:
     """
     Enriquece o resultado do filtro por CNPJ agrupando por UF presente nos dados.
-    Para cada UF encontrada, carrega o arquivo de coordenadas correspondente
+    UFs inválidas (ex: EX para exterior) são ignoradas silenciosamente.
+    Para cada UF válida, carrega o arquivo de coordenadas correspondente
     e enriquece apenas as linhas daquela UF.
     """
     df = pl.read_parquet(raw_path)
@@ -140,20 +131,26 @@ def _enrich_cnpj_estab(
     partes: list[pl.DataFrame] = []
 
     for uf_val in ufs_no_df:
-        df_uf = df.filter(pl.col("UF") == uf_val)
+        uf_upper = uf_val.strip().upper()
 
-        # Converte os códigos SIAFI presentes na coluna MUNICIPIO → IBGE
+        # Ignora UFs que não têm arquivo de coordenadas
+        if uf_upper in _UFS_INVALIDAS:
+            print(f"[SKIP] UF={uf_upper} ignorada (sem arquivo de coordenadas esperado).")
+            partes.append(df.filter(pl.col("UF") == uf_val))
+            continue
+
+        df_uf = df.filter(pl.col("UF") == uf_val)
         siafi_no_df = df_uf["MUNICIPIO"].drop_nulls().unique().to_list()
         ibge_codes  = siafi_to_ibge(siafi_no_df, df_map)
 
         try:
             df_uf = enrich(
-                df_uf, uf_val, coords_dir,
+                df_uf, uf_upper, coords_dir,
                 ibge_codes=ibge_codes or None,
                 use_nominatim=use_nominatim,
             )
         except FileNotFoundError:
-            print(f"[WARN] Sem arquivo de coords para UF={uf_val}. Pulando enriquecimento.")
+            print(f"[WARN] Sem arquivo de coords para UF={uf_upper}. Pulando enriquecimento.")
 
         partes.append(df_uf)
 
@@ -189,7 +186,7 @@ def main() -> None:
     parquet_dir = base_dir / month / "parquet"
     output_dir  = base_dir / month / "outputs"
 
-    needs_estab  = "municipio"    in args.outputs or "cnpj_estab"   in args.outputs
+    needs_estab   = "municipio"    in args.outputs or "cnpj_estab"   in args.outputs
     needs_empresa = "cnpj_empresa" in args.outputs
 
     # -----------------------------------------------------------------------
@@ -198,10 +195,16 @@ def main() -> None:
     print("── ETAPA 1: Download ──────────────────────────────────────\n")
 
     if needs_estab:
-        download_all(month, "ESTABELE", parquet_dir / "ESTABELE", args.max_parallel)
+        estab_paths = download_all(month, "ESTABELE", parquet_dir / "ESTABELE", args.max_parallel)
+        if not estab_paths:
+            print("[ERROR] Nenhum arquivo ESTABELE foi baixado com sucesso. Abortando.")
+            sys.exit(1)
 
     if needs_empresa:
-        download_all(month, "EMPRE", parquet_dir / "EMPRE", args.max_parallel)
+        empre_paths = download_all(month, "EMPRE", parquet_dir / "EMPRE", args.max_parallel)
+        if not empre_paths:
+            print("[ERROR] Nenhum arquivo EMPRE foi baixado com sucesso. Abortando.")
+            sys.exit(1)
 
     # -----------------------------------------------------------------------
     # ETAPA 2 — Filtragem
@@ -214,7 +217,6 @@ def main() -> None:
 
     df_map = load_siafi_map()
 
-    # Output: por município
     municipio_paths: dict[int, Path] = {}
     if "municipio" in args.outputs:
         ibge_info = ibge_to_info(args.municipios, df_map)
@@ -224,13 +226,11 @@ def main() -> None:
             output_dir / "municipio" / "_raw",
         )
 
-    # Output: estabelecimentos por CNPJ
     cnpj_estab_raw: Path | None = None
     if "cnpj_estab" in args.outputs:
         cnpj_estab_raw = output_dir / "cnpj_estab" / "_raw" / "ESTAB_CNPJ.parquet"
         filter_cnpj_estab(parquet_dir / "ESTABELE", cnpjs, cnpj_estab_raw)
 
-    # Output: empresas por CNPJ (sem enriquecimento)
     if "cnpj_empresa" in args.outputs:
         empresa_out = output_dir / "cnpj_empresa" / "EMPRESA_CNPJ.parquet"
         filter_cnpj_empresa(parquet_dir / "EMPRE", cnpjs, empresa_out)
@@ -260,7 +260,6 @@ def main() -> None:
         print("[ENRI] Estabelecimentos por CNPJ...")
         _enrich_cnpj_estab(
             cnpj_estab_raw, out_path,
-            uf_arg=args.uf,
             coords_dir=coords_dir,
             df_map=df_map,
             use_nominatim=use_nominatim,
