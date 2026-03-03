@@ -1,0 +1,124 @@
+# =============================================================================
+# .github/workflows/pipeline_full.yml
+#
+# Workflow manual (workflow_dispatch) para executar o pipeline RFB.
+#
+# Pré-requisitos (GitHub Secrets):
+#   RCLONE_CONFIG — conteúdo completo do arquivo rclone.conf com a
+#                   configuração do Google Drive (remote chamado "gdrive").
+# =============================================================================
+
+name: RFB Extração Total
+
+on:
+  workflow_dispatch:
+    inputs:
+      month:
+        description: "Mês de referência (ex: 2025-11) ou 'latest'"
+        required: false
+        default: "latest"
+
+      output_gdrive_dir:
+        description: "Diretório de destino dos outputs no Google Drive (ex: MyDrive/CNPJs/outputs)"
+        required: false
+        default: "MyDrive/CNPJs/outputs"
+
+      max_parallel:
+        description: "Máximo de downloads simultâneos (padrão: 2)"
+        required: false
+        default: "2"
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ------------------------------------------------------------------
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # ------------------------------------------------------------------
+      - name: Instalar dependências Python
+        run: pip install -r requirements.txt
+
+      # ------------------------------------------------------------------
+      - name: Instalar rclone
+        run: curl https://rclone.org/install.sh | sudo bash
+
+      # ------------------------------------------------------------------
+      - name: Configurar rclone
+        env:
+          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
+        run: |
+          mkdir -p ~/.config/rclone
+          printf '%s\n' "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
+
+      # ------------------------------------------------------------------
+      - name: DEBUG verificar config rclone
+        run: |
+          echo "=== Conteúdo do rclone.conf ==="
+          cat ~/.config/rclone/rclone.conf
+          echo "=== Remotes disponíveis ==="
+          rclone listremotes
+
+      # ------------------------------------------------------------------
+      - name: Executar pipeline
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -e
+          python pipeline.py \
+            --month        "${{ inputs.month }}" \
+            --base-dir     /tmp/rfb_data \
+            --max-parallel "${{ inputs.max_parallel }}"
+
+          echo "===== Conteúdo de /tmp/rfb_data após pipeline ====="
+          find /tmp/rfb_data/ -type f | head -100
+
+      # ------------------------------------------------------------------
+      - name: Verificar se outputs foram criados
+        if: success()
+        run: |
+          MONTH="${{ inputs.month }}"
+          if [ "$MONTH" = "latest" ]; then
+            MONTH=$(find /tmp/rfb_data/ -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]' \
+                    | sort | tail -1 | xargs basename)
+          fi
+
+          echo "Mês definido: $MONTH"
+          OUTPUT_PATH="/tmp/rfb_data/${MONTH}"
+
+          if [ -z "$(find "$OUTPUT_PATH" -name '*.parquet' 2>/dev/null | head -1)" ]; then
+            echo "[ERROR] Nenhum Parquet encontrado em $OUTPUT_PATH"
+            exit 1
+          else
+            echo "[SUCCESS] Parquets encontrados em $OUTPUT_PATH"
+            find "$OUTPUT_PATH" -name '*.parquet' | sort
+          fi
+
+      # ------------------------------------------------------------------
+      - name: Sincronizar outputs para o Google Drive
+        if: success()
+        run: |
+          MONTH="${{ inputs.month }}"
+          if [ "$MONTH" = "latest" ]; then
+            MONTH=$(find /tmp/rfb_data/ -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]' \
+                    | sort | tail -1 | xargs basename)
+          fi
+
+          if [ -z "$MONTH" ]; then
+            echo "[ERROR] Não foi possível determinar o mês."
+            exit 1
+          fi
+
+          rclone copy \
+            "/tmp/rfb_data/${MONTH}" \
+            "gdrive:${{ inputs.output_gdrive_dir }}/${MONTH}" \
+            --progress
