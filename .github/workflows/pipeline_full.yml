@@ -36,6 +36,8 @@ jobs:
       # ------------------------------------------------------------------
       - name: Checkout do repositório
         uses: actions/checkout@v4
+        with:
+          ref: extracao-total
 
       # ------------------------------------------------------------------
       - name: Configurar Python 3.11
