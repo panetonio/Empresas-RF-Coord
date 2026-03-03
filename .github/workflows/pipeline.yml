@@ -50,7 +50,7 @@ on:
       no_nominatim:
         description: "Desabilitar Nominatim? (true/false)"
         required: false
-        default: "false"
+        default: "true"
 
 jobs:
   run-pipeline:
