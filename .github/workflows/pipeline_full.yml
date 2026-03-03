@@ -1,5 +1,5 @@
 # =============================================================================
-# .github/workflows/pipeline.yml
+# .github/workflows/pipeline_full.yml
 #
 # Workflow manual (workflow_dispatch) para executar o pipeline RFB.
 #
