@@ -27,20 +27,24 @@ on:
         required: false
         default: ""
 
-      cnpjs_gdrive_path:
-        description: "Caminho do XLSX de CNPJs no Google Drive (ex: MyDrive/cnpjs.xlsx)"
+      # Agora é o caminho DENTRO do bucket S3 (sem s3://bucket-name/)
+      # Exemplo: inputs/cnpjs.xlsx
+      cnpjs_s3_path:
+        description: "Caminho do XLSX de CNPJs no S3 (ex: inputs/cnpjs.xlsx)"
         required: false
         default: ""
 
-      coords_gdrive_dir:
-        description: "Diretório dos arquivos coord_{UF}.parquet no Google Drive (ex: MyDrive/coords)"
+      # Pasta dos arquivos coord_{UF}.parquet dentro do bucket
+      coords_s3_dir:
+        description: "Pasta dos coords no S3 (ex: coords)"
         required: false
-        default: "MyDrive/CNPJs/coords"
+        default: "coords"
 
-      output_gdrive_dir:
-        description: "Diretório de destino dos outputs no Google Drive (ex: MyDrive/CNPJs/outputs)"
+      # Pasta de destino dos outputs dentro do bucket
+      output_s3_dir:
+        description: "Pasta de destino dos outputs no S3 (ex: outputs)"
         required: false
-        default: "MyDrive/CNPJs/outputs"
+        default: "outputs"
 
       max_parallel:
         description: "Máximo de downloads simultâneos (padrão: 2)"
@@ -73,67 +77,55 @@ jobs:
         run: pip install -r requirements.txt
 
       # ------------------------------------------------------------------
-      - name: Instalar rclone
-        run: curl https://rclone.org/install.sh | sudo bash
-
-      # ------------------------------------------------------------------
-      - name: Configurar rclone
-        env:
-          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
-        run: |
-          mkdir -p ~/.config/rclone
-          printf '%s\n' "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
-
-      # ------------------------------------------------------------------
-      - name: DEBUG verificar config rclone
-        run: |
-          echo "=== Conteúdo do rclone.conf ==="
-          cat ~/.config/rclone/rclone.conf
-          echo "=== Remotes disponíveis ==="
-          rclone listremotes
+      # Configura as credenciais AWS para todos os passos seguintes.
+      # Os valores vêm dos Secrets que você cadastrou no GitHub.
+      - name: Configurar credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
 
       # ------------------------------------------------------------------
       - name: Criar diretórios locais de trabalho
-        run: |
-          mkdir -p /tmp/rfb_data/coords
+        run: mkdir -p /tmp/rfb_data/coords
 
       # ------------------------------------------------------------------
-      # Para output "municipio": baixa apenas o coord_{UF}.parquet informado.
-      # Para output "cnpj_estab": baixa TODOS os arquivos do diretório de coords,
-      # pois os estabelecimentos podem pertencer a qualquer UF do Brasil.
-      - name: Baixar arquivos de coordenadas do Google Drive
+      # Mesma lógica de antes:
+      # - cnpj_estab → baixa TODOS os coord_*.parquet (qualquer UF pode aparecer)
+      # - municipio  → baixa só o coord_{UF}.parquet necessário
+      - name: Baixar arquivos de coordenadas do S3
         run: |
           OUTPUTS="${{ inputs.outputs }}"
           UF="${{ inputs.uf }}"
+          BUCKET="${{ secrets.AWS_S3_BUCKET }}"
+          COORDS_DIR="${{ inputs.coords_s3_dir }}"
 
           if echo "$OUTPUTS" | grep -qw "cnpj_estab"; then
             echo "[INFO] cnpj_estab solicitado — baixando todos os arquivos de coords..."
-            rclone copy \
-              "gdrive:${{ inputs.coords_gdrive_dir }}" \
+            aws s3 sync \
+              "s3://${BUCKET}/${COORDS_DIR}/" \
               /tmp/rfb_data/coords/ \
-              --include "coord_*.parquet" \
-              --progress
+              --exclude "*" \
+              --include "coord_*.parquet"
           elif [ -n "$UF" ]; then
             echo "[INFO] Baixando coord_${UF}.parquet..."
-            rclone copy \
-              "gdrive:${{ inputs.coords_gdrive_dir }}/coord_${UF}.parquet" \
-              /tmp/rfb_data/coords/
+            aws s3 cp \
+              "s3://${BUCKET}/${COORDS_DIR}/coord_${UF}.parquet" \
+              /tmp/rfb_data/coords/coord_${UF}.parquet
           fi
 
           echo "[INFO] Arquivos de coords disponíveis:"
           ls /tmp/rfb_data/coords/ || echo "(nenhum)"
 
       # ------------------------------------------------------------------
-      - name: Baixar XLSX de CNPJs do Google Drive
-        if: ${{ inputs.cnpjs_gdrive_path != '' }}
+      - name: Baixar XLSX de CNPJs do S3
+        if: ${{ inputs.cnpjs_s3_path != '' }}
         run: |
-          rclone copy \
-            "gdrive:${{ inputs.cnpjs_gdrive_path }}" \
-            /tmp/rfb_data/
-          FILENAME=$(basename "${{ inputs.cnpjs_gdrive_path }}")
-          if [ "$FILENAME" != "cnpjs.xlsx" ]; then
-            mv "/tmp/rfb_data/${FILENAME}" /tmp/rfb_data/cnpjs.xlsx
-          fi
+          BUCKET="${{ secrets.AWS_S3_BUCKET }}"
+          aws s3 cp \
+            "s3://${BUCKET}/${{ inputs.cnpjs_s3_path }}" \
+            /tmp/rfb_data/cnpjs.xlsx
 
       # ------------------------------------------------------------------
       - name: Executar pipeline
@@ -151,7 +143,7 @@ jobs:
           fi
 
           CNPJS_ARG=""
-          if [ -n "${{ inputs.cnpjs_gdrive_path }}" ]; then
+          if [ -n "${{ inputs.cnpjs_s3_path }}" ]; then
             CNPJS_ARG="--cnpjs-file /tmp/rfb_data/cnpjs.xlsx"
           fi
 
@@ -162,9 +154,9 @@ jobs:
 
           set -e
           python pipeline.py \
-            --month    "${{ inputs.month }}" \
-            --outputs  ${{ inputs.outputs }} \
-            --base-dir /tmp/rfb_data \
+            --month      "${{ inputs.month }}" \
+            --outputs    ${{ inputs.outputs }} \
+            --base-dir   /tmp/rfb_data \
             --coords-dir /tmp/rfb_data/coords \
             --max-parallel "${{ inputs.max_parallel }}" \
             $MUNICIPIOS_ARG \
@@ -172,7 +164,7 @@ jobs:
             $CNPJS_ARG \
             $NO_NOMINATIM_ARG
 
-          echo "===== Contents of /tmp/rfb_data after pipeline ====="
+          echo "===== Arquivos gerados em /tmp/rfb_data ====="
           find /tmp/rfb_data/ -type f | head -100
 
       # ------------------------------------------------------------------
@@ -186,17 +178,16 @@ jobs:
 
           echo "Mês definido: $MONTH"
           OUTPUT_PATH="/tmp/rfb_data/${MONTH}/outputs"
-          echo "Procurando por: $OUTPUT_PATH"
 
           if [ ! -d "$OUTPUT_PATH" ]; then
             echo "[ERROR] Outputs não foram criados!"
             exit 1
           else
-            echo "[SUCCESS] Outputs encontrados!"
+            echo "[SUCCESS] Outputs encontrados em: $OUTPUT_PATH"
           fi
 
       # ------------------------------------------------------------------
-      - name: Sincronizar outputs para o Google Drive
+      - name: Sincronizar outputs para o S3
         if: success()
         run: |
           MONTH="${{ inputs.month }}"
@@ -211,14 +202,9 @@ jobs:
           fi
 
           OUTPUT_PATH="/tmp/rfb_data/${MONTH}/outputs"
+          BUCKET="${{ secrets.AWS_S3_BUCKET }}"
+          DEST="s3://${BUCKET}/${{ inputs.output_s3_dir }}/${MONTH}"
 
-          if [ ! -d "$OUTPUT_PATH" ]; then
-            echo "[WARN] Diretório de outputs não encontrado: $OUTPUT_PATH"
-            find /tmp/rfb_data/ -type f | head -50
-            exit 1
-          fi
-
-          rclone copy \
-            "$OUTPUT_PATH" \
-            "gdrive:${{ inputs.output_gdrive_dir }}/${MONTH}" \
-            --progress
+          echo "[INFO] Enviando ${OUTPUT_PATH} para ${DEST}..."
+          aws s3 sync "$OUTPUT_PATH" "$DEST"
+          echo "[SUCCESS] Upload concluído!"
