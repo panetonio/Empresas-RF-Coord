@@ -18,10 +18,11 @@ on:
         required: false
         default: "latest"
 
-      output_gdrive_dir:
-        description: "Diretório de destino dos outputs no Google Drive (ex: MyDrive/CNPJs/outputs)"
+      # Pasta de destino dos outputs dentro do bucket
+      output_s3_dir:
+        description: "Pasta de destino dos outputs no S3 (ex: raw/outputs)"
         required: false
-        default: "MyDrive/CNPJs/outputs"
+        default: "raw/outputs"
 
       max_parallel:
         description: "Máximo de downloads simultâneos (padrão: 2)"
@@ -49,24 +50,15 @@ jobs:
         run: pip install -r requirements.txt
 
       # ------------------------------------------------------------------
-      - name: Instalar rclone
-        run: curl https://rclone.org/install.sh | sudo bash
+      # Configura as credenciais AWS para todos os passos seguintes.
+      # Os valores vêm dos Secrets que você cadastrou no GitHub.
+      - name: Configurar credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
 
-      # ------------------------------------------------------------------
-      - name: Configurar rclone
-        env:
-          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
-        run: |
-          mkdir -p ~/.config/rclone
-          printf '%s\n' "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
-
-      # ------------------------------------------------------------------
-      - name: DEBUG verificar config rclone
-        run: |
-          echo "=== Conteúdo do rclone.conf ==="
-          cat ~/.config/rclone/rclone.conf
-          echo "=== Remotes disponíveis ==="
-          rclone listremotes
 
       # ------------------------------------------------------------------
       - name: Executar pipeline
@@ -118,7 +110,9 @@ jobs:
             exit 1
           fi
 
-          rclone copy \
-            "/tmp/rfb_data/${MONTH}" \
-            "gdrive:${{ inputs.output_gdrive_dir }}/${MONTH}" \
-            --progress
+          BUCKET="${{ secrets.AWS_S3_BUCKET }}"
+          DEST="s3://${BUCKET}/${{ inputs.output_s3_dir }}/${MONTH}"
+
+          echo "[INFO] Enviando /tmp/rfb_data/${MONTH} para ${DEST}..."
+          aws s3 sync "/tmp/rfb_data/${MONTH}" "$DEST"
+          echo "[SUCCESS] Upload concluído!"
