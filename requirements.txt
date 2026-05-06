@@ -1,3 +1,4 @@
 polars>=0.20.0
 requests>=2.31.0
 openpyxl>=3.1.0
+boto3>=1.43.3
