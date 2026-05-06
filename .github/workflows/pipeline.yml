@@ -28,23 +28,23 @@ on:
         default: ""
 
       # Agora é o caminho DENTRO do bucket S3 (sem s3://bucket-name/)
-      # Exemplo: inputs/cnpjs.xlsx
+      # Exemplo: raw/Auxiliares/inputs/cnpjs.xlsx
       cnpjs_s3_path:
-        description: "Caminho do XLSX de CNPJs no S3 (ex: inputs/cnpjs.xlsx)"
+        description: "Caminho do XLSX de CNPJs no S3 (ex: raw/Auxiliares/inputs/cnpjs.xlsx)"
         required: false
-        default: ""
+        default: "raw/Auxiliares/inputs/cnpjs.xlsx"
 
       # Pasta dos arquivos coord_{UF}.parquet dentro do bucket
       coords_s3_dir:
-        description: "Pasta dos coords no S3 (ex: coords)"
+        description: "Pasta dos coords no S3 (ex: raw/Auxiliares/coordenadas)"
         required: false
-        default: "coords"
+        default: "raw/Auxiliares/coordenadas"
 
       # Pasta de destino dos outputs dentro do bucket
       output_s3_dir:
-        description: "Pasta de destino dos outputs no S3 (ex: outputs)"
+        description: "Pasta de destino dos outputs no S3 (ex: raw/outputs)"
         required: false
-        default: "outputs"
+        default: "raw/outputs"
 
       max_parallel:
         description: "Máximo de downloads simultâneos (padrão: 2)"
