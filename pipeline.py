@@ -75,6 +75,12 @@ def main() -> None:
     print("\n── ETAPA 2: EMPRE ─────────────────────────────────────────\n")
     download_all(month, "EMPRE", output_dir, args.max_parallel)
 
+    # -----------------------------------------------------------------------
+    # ETAPA 3 — SOCIOS: download + Parquet brotli
+    # -----------------------------------------------------------------------
+    print("\n── ETAPA 2: SOCIOS ─────────────────────────────────────────\n")
+    download_all(month, "SOCIOS", output_dir, args.max_parallel)
+
     print("\n" + "=" * 60)
     print("  ✅ Pipeline concluído!")
     print("=" * 60)
