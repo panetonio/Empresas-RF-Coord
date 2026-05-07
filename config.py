@@ -40,6 +40,7 @@ COLS_SOCIOS = [
 FILE_TYPES = {
     "ESTABELE": COLS_ESTABELECIMENTO,
     "EMPRE": COLS_EMPRESA,
+    "SOCIOS": COLS_SOCIOS,
 }
 
 # Tabela de mapeamento SIAFI ↔ IBGE (relativa à raiz do projeto)
